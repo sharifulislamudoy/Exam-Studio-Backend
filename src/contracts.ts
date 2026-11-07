@@ -28,7 +28,10 @@ export const assessmentSchema = z
   .object({
     title: z.string().trim().min(2).max(160),
     subject: z.string().trim().min(1).max(80),
-    classNames: z.array(classSchema).min(1).max(CLASSES.length),
+    chapter: z.string().trim().max(120).optional(),
+    classNames: z.array(classSchema).max(CLASSES.length),
+    studentIds: z.array(z.string().min(1).max(128)).max(200).optional(),
+    homeworkMethod: z.enum(["NOTEBOOK", "PHOTO"]).optional(),
     kind: z.enum(["EXAM", "HOMEWORK"]),
     mode: z.enum(["MCQ_CQ", "WRITTEN"]),
     instructions: z.string().max(10000).default(""),
@@ -49,6 +52,8 @@ export const assessmentSchema = z
         code: "custom",
         message: "Deadline must be after opening time",
       });
+    if (a.classNames.length === 0 && !a.studentIds?.length)
+      c.addIssue({ code: "custom", message: "Choose at least one class or student" });
     if (new Set(a.classNames).size !== a.classNames.length)
       c.addIssue({ code: "custom", message: "Duplicate classes" });
     if (a.kind === "EXAM" && a.mode === "MCQ_CQ") {
@@ -89,6 +94,7 @@ export interface UserView {
   className: string | null;
   requestedClass: string | null;
   profileComplete: boolean;
+  canManageFees?: boolean;
 }
 export interface QuestionView {
   id: string;
@@ -102,9 +108,12 @@ export interface AssessmentView {
   id: string;
   title: string;
   subject: string;
+  chapter?: string;
   kind: "EXAM" | "HOMEWORK";
   mode: "MCQ_CQ" | "WRITTEN";
   classNames: string[];
+  studentIds?: string[];
+  homeworkMethod?: "NOTEBOOK" | "PHOTO";
   instructions: string;
   opensAt: string;
   closesAt: string;
@@ -118,7 +127,7 @@ export interface AssessmentView {
   maxPauseSeconds: number;
   questionCount: number;
   totalMarks: number;
-  attempt?: { id: string; status: string; phase: string };
+  attempt?: { id: string; status: string; phase: string; needsRevision?: boolean };
   questions?: QuestionView[];
 }
 export interface AttemptView {

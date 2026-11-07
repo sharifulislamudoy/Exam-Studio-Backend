@@ -5,6 +5,7 @@ import {
   Put,
   Body,
   Param,
+  Query,
   Req,
   Res,
   Headers,
@@ -16,6 +17,7 @@ import { z } from "zod";
 import type { Request, Response } from "express";
 import { AuthService, AuthGuard, Authed, userView } from "./auth";
 import { AppService, parse } from "./service";
+import { FeeService } from "./fees";
 import { origins } from "./config";
 import { classSchema } from "./contracts";
 const loginSchema = z.object({
@@ -29,7 +31,7 @@ const loginSchema = z.object({
   platform: z.enum(["web", "mobile"]),
 });
 const signupSchema = loginSchema.omit({ platform: true }).extend({
-  password: z.string().min(8, "পাসওয়ার্ড অন্তত ৮ অক্ষরের হতে হবে।").max(128),
+  password: z.string().min(8, "Password must be at least 8 characters.").max(128),
   name: z.string().trim().min(2).max(80),
   className: classSchema,
 });
@@ -45,6 +47,7 @@ export class ApiController {
   constructor(
     private auth: AuthService,
     private app: AppService,
+    private fees: FeeService,
   ) {}
   @Get("health") health() {
     return { ok: true };
@@ -156,8 +159,9 @@ export class ApiController {
   @Post("homework/:id/done") @UseGuards(AuthGuard) done(
     @Req() r: Authed,
     @Param("id") id: string,
+    @Body() body: unknown,
   ) {
-    return this.app.homeworkDone(r.user, id);
+    return this.app.homeworkDone(r.user, id, body);
   }
   @Post("assessments/:id/start") @UseGuards(AuthGuard) start(
     @Req() r: Authed,
@@ -200,6 +204,26 @@ export class ApiController {
     @Body() b: unknown,
   ) {
     return this.app.grade(r.user, id, b);
+  }
+  @Get("admin/submissions/:id/photo") @UseGuards(AuthGuard)
+  photo(@Req() r: Authed, @Param("id") id: string) {
+    return this.app.homeworkPhoto(r.user, id);
+  }
+  @Get("admin/fees") @UseGuards(AuthGuard)
+  feeList(@Req() r: Authed, @Query("month") month: string) {
+    return this.fees.list(r.user, month);
+  }
+  @Put("admin/fees/:studentId/:month") @UseGuards(AuthGuard)
+  feeBill(@Req() r: Authed, @Param("studentId") studentId: string, @Param("month") month: string, @Body() body: unknown) {
+    return this.fees.bill(r.user, studentId, month, body);
+  }
+  @Post("admin/fees/:id/payments") @UseGuards(AuthGuard)
+  feePayment(@Req() r: Authed, @Param("id") id: string, @Body() body: unknown) {
+    return this.fees.record(r.user, id, body);
+  }
+  @Post("admin/fees/:id/payments/:paymentId/void") @UseGuards(AuthGuard)
+  feeVoid(@Req() r: Authed, @Param("id") id: string, @Param("paymentId") paymentId: string) {
+    return this.fees.voidPayment(r.user, id, paymentId);
   }
   @Get("results") @UseGuards(AuthGuard) results(@Req() r: Authed) {
     return this.app.results(r.user);

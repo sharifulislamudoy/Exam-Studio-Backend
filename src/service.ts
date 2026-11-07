@@ -26,6 +26,11 @@ import { createNotice } from "./notifications";
 import { Expo } from "expo-server-sdk";
 import { z } from "zod";
 type FullAssessment = Assessment & { questions: Question[] };
+const assignedTo = (e: Assessment, u: User) =>
+  e.studentIds.includes(u.id) || e.classNames.includes(u.className ?? "");
+const audience = (e: Assessment): Prisma.UserWhereInput => ({
+  OR: [{ id: { in: e.studentIds } }, { className: { in: e.classNames } }],
+});
 const safeQuestion = (q: Question) => ({
   id: q.id,
   type: q.type,
@@ -38,9 +43,11 @@ const summary = (e: FullAssessment) => ({
   id: e.id,
   title: e.title,
   subject: e.subject,
+  chapter: e.chapter,
   kind: e.kind,
   mode: e.mode,
   classNames: e.classNames,
+  homeworkMethod: e.homeworkMethod === "PHOTO" ? "PHOTO" as const : "NOTEBOOK" as const,
   instructions: e.instructions,
   opensAt: e.opensAt,
   closesAt: e.closesAt,
@@ -177,20 +184,23 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       where:
         u.role === "TEACHER"
           ? {}
-          : { published: true, classNames: { has: u.className! } },
+          : { published: true, OR: [{ classNames: { has: u.className! } }, { studentIds: { has: u.id } }] },
       include: {
         questions: { orderBy: { position: "asc" } },
         attempts: {
           where: u.role === "STUDENT" ? { userId: u.id } : { id: "never" },
-          select: { id: true, status: true, phase: true },
+          select: { id: true, status: true, phase: true, revisionFeedback: true },
         },
       },
       orderBy: { createdAt: "desc" },
     });
     return exams.map((e) => ({
       ...summary(e),
-      attempt: e.attempts[0],
-      ...(u.role === "TEACHER" ? { questions: e.questions } : {}),
+      attempt: e.attempts[0] ? {
+        id: e.attempts[0].id, status: e.attempts[0].status,
+        phase: e.attempts[0].phase, needsRevision: e.attempts[0].revisionFeedback !== null,
+      } : undefined,
+      ...(u.role === "TEACHER" ? { questions: e.questions, studentIds: e.studentIds } : {}),
     }));
   }
   async saveAssessment(u: User, id: string | null, body: unknown) {
@@ -198,9 +208,15 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     const input = parse(assessmentSchema, body);
     if (input.kind === "HOMEWORK" && input.mode !== "WRITTEN")
       throw new BadRequestException("Homework uses written questions");
-    const { questions, ...fields } = input;
+    const { questions, studentIds = [], homeworkMethod = "NOTEBOOK", ...fields } = input;
+    const targets = [...new Set(studentIds)];
+    if (targets.length && await this.db.user.count({
+      where: { id: { in: targets }, role: "STUDENT", status: "APPROVED", profileComplete: true },
+    }) !== targets.length) throw new BadRequestException("Choose approved students only");
     const data = {
       ...fields,
+      studentIds: targets,
+      homeworkMethod: fields.kind === "HOMEWORK" ? homeworkMethod : "NOTEBOOK",
       opensAt: new Date(fields.opensAt),
       closesAt: new Date(fields.closesAt),
     };
@@ -236,7 +252,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             data: { ...data, questions: { create: questionData } },
             include: { questions: true },
           });
-      return { ...summary(e), questions: e.questions };
+      return { ...summary(e), studentIds: e.studentIds, questions: e.questions };
     });
   }
   async publish(u: User, id: string) {
@@ -254,14 +270,14 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           role: "STUDENT",
           status: "APPROVED",
           profileComplete: true,
-          className: { in: e.classNames },
+          ...audience(e),
         },
       });
       for (const s of students)
         await createNotice(
           tx,
           s.id,
-          e.kind === "EXAM" ? "নতুন পরীক্ষা" : "নতুন হোমওয়ার্ক",
+          e.kind === "EXAM" ? "New exam" : "New homework",
           e.title,
           id,
         );
@@ -278,20 +294,32 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       !e ||
       e.kind !== "HOMEWORK" ||
       !e.published ||
-      !e.classNames.includes(u.className!)
+      !assignedTo(e, u)
     )
       throw new NotFoundException();
     if (Date.now() < e.opensAt.getTime())
       throw new ForbiddenException("Homework is not open yet");
+    const submission = await this.db.attempt.findUnique({
+      where: { userId_assessmentId: { userId: u.id, assessmentId: id } },
+      select: { revisionFeedback: true },
+    });
     return {
       ...summary(e),
+      submitted: Boolean(submission),
+      revisionFeedback: submission?.revisionFeedback ?? null,
       questions: e.questions.map(safeQuestion),
       expired: Date.now() >= e.closesAt.getTime(),
     };
   }
-  async homeworkDone(u: User, id: string) {
+  async homeworkDone(u: User, id: string, body: unknown = {}) {
     requireStudent(u);
+    const { photo } = parse(z.object({
+      photo: z.string().max(1_398_104).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
+    }), body);
     return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id"=${u.id} FOR UPDATE`;
+      const current = await tx.user.findUniqueOrThrow({ where: { id: u.id } });
+      requireStudent(current);
       await tx.$queryRaw`SELECT "id" FROM "Assessment" WHERE "id"=${id} FOR UPDATE`;
       const e = await tx.assessment.findUnique({ where: { id } });
       const now = new Date();
@@ -299,25 +327,34 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         !e ||
         e.kind !== "HOMEWORK" ||
         !e.published ||
-        !e.classNames.includes(u.className!)
+        !assignedTo(e, current)
       )
         throw new NotFoundException();
+      await tx.$queryRaw`SELECT "id" FROM "Attempt" WHERE "userId"=${u.id} AND "assessmentId"=${id} FOR UPDATE`;
+      const key = { userId_assessmentId: { userId: u.id, assessmentId: id } };
+      const existing = await tx.attempt.findUnique({
+        where: key, select: { id: true, revisionFeedback: true },
+      });
+      if (existing && existing.revisionFeedback === null) return { id: existing.id, ok: true };
       if (now < e.opensAt || now >= e.closesAt)
-        throw new ForbiddenException(
-          "Homework submission window has closed or is not open",
-        );
+        throw new ForbiddenException("Homework submission is closed");
+      const bytes = photo ? Buffer.from(photo, "base64") : null;
+      if (e.homeworkMethod === "PHOTO") {
+        if (!bytes || bytes.length > 1_048_576 || bytes.length < 5 ||
+            bytes[0] !== 255 || bytes[1] !== 216 || bytes[2] !== 255 ||
+            bytes[bytes.length - 2] !== 255 || bytes[bytes.length - 1] !== 217)
+          throw new BadRequestException("Attach a JPEG photo up to 1 MB");
+      } else if (bytes) throw new BadRequestException("This homework is reviewed in class");
       const a = await tx.attempt.upsert({
-        where: { userId_assessmentId: { userId: u.id, assessmentId: id } },
+        where: key,
         create: {
-          userId: u.id,
-          assessmentId: id,
-          status: "FINISHED",
-          phase: "WRITTEN",
-          anchorAt: now,
-          deviceKey: "homework",
-          finishedAt: now,
+          userId: u.id, assessmentId: id, status: "FINISHED", phase: "WRITTEN",
+          anchorAt: now, deviceKey: "homework", finishedAt: now, homeworkPhoto: bytes,
         },
-        update: {},
+        update: {
+          homeworkPhoto: bytes, revisionFeedback: null, finishedAt: now,
+          writtenScore: null, gradedAt: null, feedback: "", resultPublished: false,
+        },
       });
       return { id: a.id, ok: true };
     });
@@ -340,7 +377,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         !e ||
         !e.published ||
         e.kind !== "EXAM" ||
-        !e.classNames.includes(current.className!)
+        !assignedTo(e, current)
       )
         throw new NotFoundException();
       let a = await tx.attempt.findUnique({
@@ -547,6 +584,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
   async submissions(u: User) {
     requireTeacher(u);
     const rows = await this.db.attempt.findMany({
+      omit: { homeworkPhoto: true },
       include: {
         user: true,
         assessment: { include: { questions: true } },
@@ -562,11 +600,20 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       totalMax: a.assessment.questions.reduce((s, q) => s + q.marks, 0),
     }));
   }
+  async homeworkPhoto(u: User, id: string) {
+    requireTeacher(u);
+    const attempt = await this.db.attempt.findUnique({
+      where: { id },
+      select: { homeworkPhoto: true },
+    });
+    return { photo: attempt?.homeworkPhoto ? Buffer.from(attempt.homeworkPhoto).toString("base64") : null };
+  }
   async grade(u: User, id: string, body: unknown) {
     requireTeacher(u);
     const x = parse(
       z.object({
         writtenScore: z.number().min(0),
+        needsRevision: z.boolean().optional(),
         feedback: z.string().max(5000),
         publish: z.boolean(),
       }),
@@ -575,6 +622,15 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     return this.locked(u, id, undefined, async (tx, a, e, now) => {
       if (a.status !== "FINISHED")
         throw new ConflictException("Exam is still running");
+      if (x.needsRevision) {
+        if (e.kind !== "HOMEWORK" || now >= e.closesAt || !x.feedback.trim() || a.resultPublished)
+          throw new BadRequestException("Revision requires unpublished homework, feedback and an open deadline");
+        await tx.attempt.update({ where: { id }, data: { revisionFeedback: x.feedback.trim() } });
+        await createNotice(tx, a.userId, "Homework needs revision", e.title, e.id);
+        return { ok: true };
+      }
+      if (a.revisionFeedback !== null)
+        throw new ConflictException("Wait for the student to resubmit before grading");
       if (x.writtenScore > writtenMax(e.questions))
         throw new BadRequestException("Written score exceeds maximum");
       if (x.publish && now < e.closesAt)
@@ -587,11 +643,11 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
           writtenScore: x.writtenScore,
           feedback: x.feedback,
           gradedAt: now,
-          resultPublished: x.publish,
+          resultPublished: a.resultPublished || x.publish,
         },
       });
       if (x.publish && !a.resultPublished)
-        await createNotice(tx, a.userId, "ফলাফল প্রকাশ হয়েছে", e.title, e.id);
+        await createNotice(tx, a.userId, "Results published", e.title, e.id);
       return { ok: true };
     });
   }
@@ -599,12 +655,16 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     requireStudent(u);
     const rows = await this.db.attempt.findMany({
       where: { userId: u.id },
+      omit: { homeworkPhoto: true },
       include: { assessment: { include: { questions: true } }, answers: true },
       orderBy: { startedAt: "desc" },
     });
     return rows.map((a) => ({
       id: a.id,
       title: a.assessment.title,
+      assessmentId: a.assessmentId,
+      subject: a.assessment.subject,
+      chapter: a.assessment.chapter,
       kind: a.assessment.kind,
       status: a.status,
       finishedAt: a.finishedAt,
@@ -707,15 +767,16 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
             where: {
               role: "STUDENT",
               status: "APPROVED",
-              className: { in: e.classNames },
-              attempts: { none: { assessmentId: e.id, status: "FINISHED" } },
+              ...audience(e),
+              profileComplete: true,
+              attempts: { none: { assessmentId: e.id, status: "FINISHED", revisionFeedback: null } },
             },
           });
           for (const s of students)
             await createNotice(
               tx,
               s.id,
-              "জমা দেওয়ার সময় শেষ হচ্ছে",
+              "Deadline approaching",
               e.title,
               e.id,
             );

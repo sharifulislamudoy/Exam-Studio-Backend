@@ -8,6 +8,7 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   JWT_SECRET: z.string().min(32),
   WEB_ORIGINS: z.string().default("http://localhost:3000"),
+  FEE_OWNER_EMAIL: z.string().trim().toLowerCase().email().optional(),
   TEACHER_EMAILS: z.string().min(1),
   EXPO_ACCESS_TOKEN: z.string().default(""),
 });

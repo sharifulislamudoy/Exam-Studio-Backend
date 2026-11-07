@@ -25,6 +25,7 @@ export const userView = (u: User) => ({
   className: u.className,
   requestedClass: u.requestedClass,
   profileComplete: u.profileComplete,
+  canManageFees: canManageFees(u),
 });
 const cookieBase = {
   httpOnly: true,
@@ -43,7 +44,7 @@ export class AuthService {
   }) {
     if (teacherEmails.includes(input.email))
       throw new ConflictException(
-        "এই ইমেইল দিয়ে শিক্ষার্থী অ্যাকাউন্ট খোলা যাবে না।",
+        "This email cannot be used for a student account.",
       );
     const passwordHash = await hashPassword(input.password);
     try {
@@ -61,7 +62,7 @@ export class AuthService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       )
-        throw new ConflictException("এই ইমেইলে ইতিমধ্যে একটি অ্যাকাউন্ট আছে।");
+        throw new ConflictException("An account already exists for this email.");
       throw error;
     }
   }
@@ -69,14 +70,14 @@ export class AuthService {
     const user = await this.db.user.findUnique({ where: { email } });
     const valid = await verifyPassword(password, user?.passwordHash);
     if (!user || !valid)
-      throw new UnauthorizedException("ইমেইল অথবা পাসওয়ার্ড সঠিক নয়।");
+      throw new UnauthorizedException("Incorrect email or password.");
     return user;
   }
   async issue(u: User, platform: "web" | "mobile", res: Response) {
     if (platform === "web") requireTeacher(u);
     else if (u.role !== "STUDENT")
       throw new ForbiddenException(
-        "শিক্ষকের অ্যাকাউন্ট দিয়ে Admin Web-এ প্রবেশ করুন।",
+        "Sign in with your teacher account.",
       );
     const raw = randomBytes(48).toString("base64url");
     const session = await this.db.session.create({
@@ -175,6 +176,11 @@ export class AuthGuard implements CanActivate {
     }
   }
 }
+export const canManageFees = (u: User) =>
+  u.role === "TEACHER" && u.status === "APPROVED" &&
+  teacherEmails.includes(u.email.toLowerCase()) &&
+  u.email.toLowerCase() === (config.FEE_OWNER_EMAIL ?? (teacherEmails.length === 1 ? teacherEmails[0] : undefined));
+
 export function requireTeacher(u: User) {
   if (
     u.role !== "TEACHER" ||

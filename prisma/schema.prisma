@@ -50,6 +50,8 @@ model User {
   attempts        Attempt[]
   notifications   Notification[]
   devices         PushDevice[]
+  monthlyFees     MonthlyFee[]
+  lessons         WeeklyLesson[]
 }
 model Session {
   id        String @id @default(cuid())
@@ -64,7 +66,10 @@ model Assessment {
   id                  String @id @default(cuid())
   title               String
   subject             String
+  chapter             String @default("")
   classNames          String[]
+  studentIds          String[] @default([])
+  homeworkMethod      String @default("NOTEBOOK")
   kind                Kind
   mode                Mode
   instructions        String
@@ -113,6 +118,8 @@ model Attempt {
   deviceKey       String
   startedAt       DateTime @default(now())
   finishedAt      DateTime?
+  homeworkPhoto   Bytes?
+  revisionFeedback String?
   writtenScore    Float?
   feedback        String @default("")
   gradedAt        DateTime?
@@ -162,4 +169,49 @@ model PushDelivery {
   lastError      String?
   nextTryAt      DateTime @default(now())
   @@index([status, nextTryAt])
+}
+
+model MonthlyFee {
+  id          String @id @default(cuid())
+  studentId   String
+  student     User @relation(fields: [studentId], references: [id])
+  month       String
+  billedPaisa Int
+  payments    FeePayment[]
+  @@unique([studentId, month])
+  @@index([month])
+}
+
+model FeePayment {
+  id          String @id
+  feeId       String
+  fee         MonthlyFee @relation(fields: [feeId], references: [id])
+  amountPaisa Int
+  method      String
+  paidOn      String
+  reference   String
+  voidedAt    DateTime?
+  createdAt   DateTime @default(now())
+}
+
+model WeeklyLesson {
+  id         String @id @default(cuid())
+  studentId  String
+  student    User @relation(fields: [studentId], references: [id])
+  weekday    Int
+  startsAt   String
+  minutes    Int
+  subject    String
+  active     Boolean @default(true)
+  attendance LessonAttendance[]
+  @@index([studentId, weekday, startsAt])
+}
+
+model LessonAttendance {
+  lessonId     String
+  lesson       WeeklyLesson @relation(fields: [lessonId], references: [id])
+  date         String
+  status       String
+  movedTo      DateTime?
+  @@id([lessonId, date])
 }

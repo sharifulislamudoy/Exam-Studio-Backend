@@ -8,17 +8,21 @@ import helmet from "helmet";
 import { config, origins } from "./config";
 import { Db } from "./prisma";
 import { AuthService, AuthGuard } from "./auth";
+import { FeeService } from "./fees";
 import { AppService } from "./service";
 import { PushWorker } from "./notifications";
+import { ClassroomController, ClassroomService } from "./classroom";
 import { ApiController } from "./controller";
 @Module({
   imports: [ThrottlerModule.forRoot([{ ttl: 60000, limit: 240 }])],
-  controllers: [ApiController],
+  controllers: [ApiController, ClassroomController],
   providers: [
     Db,
     AuthService,
     AuthGuard,
     AppService,
+    FeeService,
+    ClassroomService,
     PushWorker,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
