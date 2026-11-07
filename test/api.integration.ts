@@ -75,12 +75,12 @@ test("API integration: approvals, isolation, timing, pause, marking and homework
       email: onboardingEmail.toUpperCase(),
       password: demoPassword,
       name: "New student",
-      className: "3",
+      className: "1",
       role: "TEACHER",
     };
     const invalid = await request("/auth/signup", "POST", {
       ...signup,
-      className: "7",
+      className: "0",
     });
     assert.equal(invalid.status, 400, "invalid class rejected");
     const newLogin = await request("/auth/signup", "POST", signup);
@@ -90,6 +90,7 @@ test("API integration: approvals, isolation, timing, pause, marking and homework
     const newToken = newLogin.data.accessToken;
     assert.equal(newcomer.email, onboardingEmail);
     assert.equal(newcomer.profileComplete, true);
+    assert.equal(newcomer.className, "1");
     assert.equal(newcomer.role, "STUDENT", "signup cannot escalate role");
     assert.equal(newcomer.status, "PENDING");
     assert.equal(newcomer.passwordHash, undefined);
@@ -126,10 +127,23 @@ test("API integration: approvals, isolation, timing, pause, marking and homework
       "",
       true,
     );
-    await request("/me/class-request", "POST", { className: "8" }, newToken);
+    assert.equal(
+      (await request("/me/class-request", "POST", { className: "13" }, newToken))
+        .status,
+      400,
+      "out-of-range class change rejected",
+    );
+    const classRequest = await request(
+      "/me/class-request",
+      "POST",
+      { className: "12" },
+      newToken,
+    );
+    assert.equal(classRequest.status, 201);
+    assert.equal(classRequest.data.requestedClass, "12");
     assert.equal(
       (await request("/me", "GET", undefined, newToken)).data.className,
-      "3",
+      "1",
       "class stays unchanged before approval",
     );
     await request(
@@ -141,7 +155,7 @@ test("API integration: approvals, isolation, timing, pause, marking and homework
     );
     assert.equal(
       (await request("/me", "GET", undefined, newToken)).data.className,
-      "8",
+      "12",
       "class changes after approval",
     );
     const a = await request("/auth/login", "POST", {

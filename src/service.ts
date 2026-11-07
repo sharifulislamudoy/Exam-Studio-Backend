@@ -10,7 +10,12 @@ import {
 import { Prisma, User, Attempt, Assessment, Question } from "@prisma/client";
 import { Db } from "./prisma";
 import { requireStudent, requireTeacher, userView } from "./auth";
-import { assessmentSchema, profileSchema, classSchema } from "./contracts";
+import {
+  assessmentSchema,
+  canPauseForClass,
+  classSchema,
+  profileSchema,
+} from "./contracts";
 import {
   settleClock,
   remainingSeconds,
@@ -488,7 +493,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
         if (a.status === "PAUSED") return this.view(tx, a, e, now);
         if (
           !e.allowPause ||
-          u.className === "3" ||
+          !canPauseForClass(u.className) ||
           a.pauseCount >= e.maxPauseCount ||
           pauseRemainingSeconds(a, e, now) <= 0
         )

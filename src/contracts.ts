@@ -1,6 +1,10 @@
 import { z } from "zod";
-export const CLASSES = ["3", "8", "9", "11"] as const;
+export const CLASSES = [
+  "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+] as const;
 export const classSchema = z.enum(CLASSES);
+export const canPauseForClass = (className: string | null | undefined) =>
+  className === "8" || className === "9" || className === "11";
 export const profileSchema = z.object({
   name: z.string().trim().min(2).max(80),
   className: classSchema,
@@ -24,7 +28,7 @@ export const assessmentSchema = z
   .object({
     title: z.string().trim().min(2).max(160),
     subject: z.string().trim().min(1).max(80),
-    classNames: z.array(classSchema).min(1).max(4),
+    classNames: z.array(classSchema).min(1).max(CLASSES.length),
     kind: z.enum(["EXAM", "HOMEWORK"]),
     mode: z.enum(["MCQ_CQ", "WRITTEN"]),
     instructions: z.string().max(10000).default(""),
