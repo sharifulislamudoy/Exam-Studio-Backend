@@ -1,0 +1,3 @@
+ALTER TABLE "User"
+  ALTER COLUMN "googleSub" DROP NOT NULL,
+  ADD COLUMN "passwordHash" TEXT;

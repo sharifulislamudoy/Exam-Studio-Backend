@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+enum Role {
+  TEACHER
+  STUDENT
+}
+enum Approval {
+  PENDING
+  APPROVED
+  REJECTED
+}
+enum Kind {
+  EXAM
+  HOMEWORK
+}
+enum Mode {
+  MCQ_CQ
+  WRITTEN
+}
+enum Phase {
+  MCQ
+  CQ
+  WRITTEN
+}
+enum AttemptStatus {
+  ACTIVE
+  PAUSED
+  FINISHED
+}
+model User {
+  id              String   @id @default(cuid())
+  // Existing provider IDs are retained for databases upgrading from the old release.
+  googleSub       String?  @unique
+  passwordHash    String?
+  email           String   @unique
+  name            String
+  role            Role     @default(STUDENT)
+  status          Approval @default(PENDING)
+  className       String?
+  requestedClass  String?
+  profileComplete Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  sessions        Session[]
+  attempts        Attempt[]
+  notifications   Notification[]
+  devices         PushDevice[]
+}
+model Session {
+  id        String @id @default(cuid())
+  userId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  @@index([userId])
+}
+model Assessment {
+  id                  String @id @default(cuid())
+  title               String
+  subject             String
+  classNames          String[]
+  kind                Kind
+  mode                Mode
+  instructions        String
+  opensAt             DateTime
+  closesAt            DateTime
+  published           Boolean @default(false)
+  reminderQueuedAt    DateTime?
+  mcqSeconds          Int @default(0)
+  mcqExtraSeconds     Int @default(0)
+  cqSeconds           Int @default(0)
+  writtenSeconds      Int @default(0)
+  allowPause          Boolean @default(false)
+  maxPauseCount       Int @default(0)
+  maxPauseSeconds     Int @default(0)
+  createdAt           DateTime @default(now())
+  questions           Question[]
+  attempts            Attempt[]
+  @@index([published, closesAt])
+}
+model Question {
+  id           String @id @default(cuid())
+  assessmentId String
+  assessment   Assessment @relation(fields:[assessmentId], references:[id], onDelete:Cascade)
+  type         Phase
+  text         String
+  marks        Float
+  options      Json?
+  correctIndex Int?
+  position     Int
+  answers      Answer[]
+  @@index([assessmentId, position])
+}
+model Attempt {
+  id              String @id @default(cuid())
+  userId          String
+  user            User @relation(fields:[userId], references:[id])
+  assessmentId    String
+  assessment      Assessment @relation(fields:[assessmentId], references:[id])
+  status          AttemptStatus @default(ACTIVE)
+  phase           Phase
+  anchorAt        DateTime
+  spentMs         Int @default(0)
+  pauseCount      Int @default(0)
+  pauseUsedMs     Int @default(0)
+  pausedAt        DateTime?
+  deviceKey       String
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  writtenScore    Float?
+  feedback        String @default("")
+  gradedAt        DateTime?
+  resultPublished Boolean @default(false)
+  answers         Answer[]
+  @@unique([userId, assessmentId])
+  @@index([status])
+}
+model Answer {
+  id            String @id @default(cuid())
+  attemptId     String
+  attempt       Attempt @relation(fields:[attemptId], references:[id], onDelete:Cascade)
+  questionId    String
+  question      Question @relation(fields:[questionId], references:[id])
+  selectedIndex Int
+  revision      Int
+  updatedAt     DateTime @updatedAt
+  @@unique([attemptId, questionId])
+}
+model Notification {
+  id           String @id @default(cuid())
+  userId       String
+  user         User @relation(fields:[userId], references:[id], onDelete:Cascade)
+  title        String
+  body         String
+  assessmentId String?
+  readAt       DateTime?
+  createdAt    DateTime @default(now())
+  deliveries   PushDelivery[]
+  @@index([userId, createdAt])
+}
+model PushDevice {
+  id         String @id @default(cuid())
+  userId     String
+  user       User @relation(fields:[userId], references:[id], onDelete:Cascade)
+  token      String @unique
+  updatedAt  DateTime @updatedAt
+}
+model PushDelivery {
+  id             String @id @default(cuid())
+  notificationId String
+  notification   Notification @relation(fields:[notificationId], references:[id], onDelete:Cascade)
+  token          String
+  status         String @default("PENDING")
+  tries          Int @default(0)
+  ticketId       String?
+  lastError      String?
+  nextTryAt      DateTime @default(now())
+  @@index([status, nextTryAt])
+}
